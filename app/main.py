@@ -1,10 +1,12 @@
 from fastapi import FastAPI, Depends, Header
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from app.database import get_db
 from app.dependencies import get_current_tenant
-from app.models import Tenant
-from app.schemas import GenerateRequest
+from app.models import Tenant, UsageEvent
+from app.schemas import GenerateRequest, UsageResponse
 from app.services import MeterService, QuotaService
+
 
 app = FastAPI(
     title="FlyRank Billing Engine",
@@ -60,5 +62,35 @@ def generate_content(
         "usage_recorded": {
             "api_calls": 1,
             "total_ai_tokens": total_tokens
+        }
+    }
+
+
+@app.get("/usage", response_model=UsageResponse)
+def get_usage(tenant: Tenant = Depends(get_current_tenant), db: Session = Depends(get_db)):
+    """Returns the rolled-up monthly usage and limits for the tenant."""
+
+    # Sum API Calls
+    api_calls_used = db.query(func.sum(UsageEvent.quantity)).filter(
+        UsageEvent.tenant_id == tenant.id,
+        UsageEvent.usage_type == "api_call"
+    ).scalar() or 0
+
+    # Sum AI Tokens (input + cached + output + reasoning)
+    ai_tokens_used = db.query(func.sum(UsageEvent.quantity)).filter(
+        UsageEvent.tenant_id == tenant.id,
+        UsageEvent.usage_type.in_(["input_token", "cached_input_token", "output_token", "reasoning_token"])
+    ).scalar() or 0
+
+    return {
+        "api_calls": {
+            "used": api_calls_used,
+            "limit": tenant.plan.api_call_limit,
+            "cost": 0  # We will implement strict money math in Stage 11!
+        },
+        "ai_tokens": {
+            "used": ai_tokens_used,
+            "limit": tenant.plan.ai_token_limit,
+            "cost": 0
         }
     }
