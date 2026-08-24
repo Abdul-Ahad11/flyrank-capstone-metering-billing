@@ -1,5 +1,7 @@
+from fastapi import HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy import func
 from app.models import UsageEvent, Tenant
 
 
@@ -19,20 +21,56 @@ class MeterService:
         db.add(new_event)
 
         try:
-            # Attempt to save to the database
             db.commit()
             db.refresh(new_event)
             return new_event
 
         except IntegrityError:
-            # An IntegrityError means our UniqueConstraint caught a duplicate key.
-            # 1. We MUST rollback the session so the database connection remains usable.
             db.rollback()
-
-            # 2. Fetch and return the original event that already existed.
             existing_event = db.query(UsageEvent).filter(
                 UsageEvent.tenant_id == tenant.id,
                 UsageEvent.idempotency_key == idempotency_key
             ).first()
-
             return existing_event
+
+
+class QuotaService:
+    @staticmethod
+    def check_quota(db: Session, tenant: Tenant, usage_type: str, requested_quantity: int):
+        """
+        Checks if requested usage exceeds the tenant's plan limit.
+        Raises 402 or 429 if the limit is exceeded.
+        """
+        # 1. Sum up all current usage of this type for this tenant
+        current_usage = db.query(func.sum(UsageEvent.quantity)).filter(
+            UsageEvent.tenant_id == tenant.id,
+            UsageEvent.usage_type == usage_type
+        ).scalar() or 0
+
+        # 2. Determine the correct limit based on the type
+        limit = 0
+        if usage_type == "api_call":
+            limit = tenant.plan.api_call_limit
+        elif usage_type == "ai_token":
+            limit = tenant.plan.ai_token_limit
+        else:
+            raise HTTPException(status_code=400, detail=f"Unknown usage type: {usage_type}")
+
+        # 3. Check the boundary!
+        if current_usage + requested_quantity > limit:
+            remaining = limit - current_usage
+
+            # FIX: Use 'in' so it matches both "Free" and our dynamic "Test Free - <uuid>"
+            if "Free" in tenant.plan.name:
+                raise HTTPException(
+                    status_code=402,
+                    detail=f"Payment Required: Quota exceeded. You have {remaining} {usage_type}s remaining, but requested {requested_quantity}. Please upgrade to Pro."
+                )
+            # Use 429 for general rate/usage limits on Pro plans
+            else:
+                raise HTTPException(
+                    status_code=429,
+                    detail=f"Too Many Requests: Quota exceeded. You have {remaining} {usage_type}s remaining."
+                )
+
+        return True
