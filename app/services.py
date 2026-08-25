@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy import func
 from app.models import UsageEvent, Tenant
+from app.pricing import PRICING
 
 
 class MeterService:
@@ -74,3 +75,32 @@ class QuotaService:
                 )
 
         return True
+
+
+class CostService:
+    @staticmethod
+    def calculate_cost(db: Session, tenant_id: int, usage_category: str) -> int:
+        """
+        Calculates the exact cost in integer micro-units for a specific category.
+        """
+        if usage_category == "api_call":
+            usage = db.query(func.sum(UsageEvent.quantity)).filter(
+                UsageEvent.tenant_id == tenant_id,
+                UsageEvent.usage_type == "api_call"
+            ).scalar() or 0
+            return usage * PRICING["api_call"]
+
+        elif usage_category == "ai_token":
+            # Query all token types grouped by their specific type so we can price them differently
+            results = db.query(UsageEvent.usage_type, func.sum(UsageEvent.quantity)).filter(
+                UsageEvent.tenant_id == tenant_id,
+                UsageEvent.usage_type.in_(["input_token", "cached_input_token", "output_token", "reasoning_token"])
+            ).group_by(UsageEvent.usage_type).all()
+
+            total_cost = 0
+            for usage_type, quantity in results:
+                total_cost += quantity * PRICING[usage_type]
+
+            return total_cost
+
+        return 0
