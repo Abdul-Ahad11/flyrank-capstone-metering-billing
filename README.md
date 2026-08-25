@@ -93,38 +93,42 @@ A generic `PaymentProvider` interface decouples core billing logic from any sing
 
 ```mermaid
 flowchart TD
-    A[Client] -->|"X-Tenant-ID + Idempotency-Key"| B[FastAPI Router]
+    A[Client Request] --> B[FastAPI Router]
     B --> C[Tenant Identification]
-    C --> D{QuotaService<br/>Is tenant allowed?}
-    D -->|Within limits| E[MeterService<br/>Record usage]
-    D -->|Free tier exceeded| F["402 Payment Required"]
-    D -->|Paid tier exceeded| G["429 Too Many Requests"]
-    E --> H[("UsageEvent table")]
-    H --> I[CostService<br/>Calculate cost]
-    I --> J[Billing / Usage Dashboard]
+    C --> D{Quota Check}
+    D -->|Within limits| E[Record Usage]
+    D -->|Free tier exceeded| F[402 Payment Required]
+    D -->|Paid tier exceeded| G[429 Too Many Requests]
+    E --> H[Usage Event Stored]
+    H --> I[Calculate Cost]
+    I --> J[Billing Dashboard]
 
     style F fill:#ffe0e0,stroke:#d33,color:#900
     style G fill:#fff3cd,stroke:#d9a400,color:#7a5b00
     style J fill:#e0f7e9,stroke:#2e9e5b,color:#155724
 ```
 
+*Headers carried on the request: `X-Tenant-ID`, `Idempotency-Key`*
+
 ### Payment Webhook Flow
 
 ```mermaid
 flowchart TD
-    A[Payment Provider] -->|Webhook event| B["POST /webhooks/safepay"]
-    B --> C{Verify HMAC-SHA256 signature}
-    C -->|Invalid| D[Reject request]
-    C -->|Valid| E{Already processed?}
-    E -->|Yes| F[Ignore duplicate]
-    E -->|No| G[Process event]
-    G --> H[("ProcessedWebhook table")]
-    G --> I[Update tenant billing state]
+    A[Payment Provider] --> B[Webhook Endpoint]
+    B --> C{Verify Signature}
+    C -->|Invalid| D[Reject Request]
+    C -->|Valid| E{Already Processed?}
+    E -->|Yes| F[Ignore Duplicate]
+    E -->|No| G[Process Event]
+    G --> H[Webhook Recorded]
+    G --> I[Update Billing State]
 
     style D fill:#ffe0e0,stroke:#d33,color:#900
     style F fill:#fff3cd,stroke:#d9a400,color:#7a5b00
     style I fill:#e0f7e9,stroke:#2e9e5b,color:#155724
 ```
+
+*Endpoint: `POST /webhooks/safepay` · Signature check: HMAC-SHA256 via `hmac.compare_digest`*
 
 ---
 
@@ -359,12 +363,14 @@ A single AI request can produce multiple usage events. Rather than one lump `ide
 
 ```mermaid
 flowchart LR
-    A["request-123<br/>(original key)"] --> B[request-123-api]
+    A[Original Key] --> B[request-123-api]
     A --> C[request-123-in]
     A --> D[request-123-cache]
     A --> E[request-123-out]
     A --> F[request-123-reason]
 ```
+
+*Original key: `request-123`*
 
 ---
 
@@ -395,3 +401,4 @@ pytest -v
 | 🛡️ Webhook replay protection | ✅ Automated acceptance testing |
 
 The result is a billing engine that separates **authorization, usage metering, cost calculation, and payment processing** into clear responsibilities — while staying extensible for additional payment providers.
+
