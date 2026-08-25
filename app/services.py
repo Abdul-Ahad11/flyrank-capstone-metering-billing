@@ -2,7 +2,7 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy import func
-from app.models import UsageEvent, Tenant
+from app.models import UsageEvent, Tenant , ProcessedWebhook, Plan
 from app.pricing import PRICING
 
 
@@ -104,3 +104,34 @@ class CostService:
             return total_cost
 
         return 0
+
+
+class WebhookService:
+    @staticmethod
+    def process_upgrade_event(db: Session, event_id: str, tenant_id: int) -> bool:
+        """
+        Processes a subscription upgrade idempotently.
+        Returns True if processed, False if it was a duplicate.
+        """
+        # 1. Deduplication Check
+        existing = db.query(ProcessedWebhook).filter(ProcessedWebhook.event_id == event_id).first()
+        if existing:
+            return False  # Safe ignore: We already processed this exact webhook
+
+        # 2. Find the Tenant and the Pro Plan
+        tenant = db.query(Tenant).filter(Tenant.id == tenant_id).first()
+        pro_plan = db.query(Plan).filter(Plan.name == "Pro").first()
+
+        if not tenant or not pro_plan:
+            return False
+
+        # 3. Upgrade the tenant!
+        tenant.plan_id = pro_plan.id
+        if tenant.subscription:
+            tenant.subscription.status = "active"
+
+        # 4. Record this event ID so we NEVER process it again
+        db.add(ProcessedWebhook(event_id=event_id))
+        db.commit()
+
+        return True

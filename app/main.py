@@ -1,11 +1,13 @@
-from fastapi import FastAPI, Depends, Header
+from fastapi import FastAPI, Depends, Header , Request, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from app.database import get_db
 from app.dependencies import get_current_tenant
 from app.models import Tenant, UsageEvent
 from app.schemas import GenerateRequest, UsageResponse
-from app.services import MeterService, QuotaService
+from app.providers import payment_provider
+from app.services import MeterService, QuotaService ,WebhookService
+from app.config import settings
 
 
 app = FastAPI(
@@ -94,3 +96,36 @@ def get_usage(tenant: Tenant = Depends(get_current_tenant), db: Session = Depend
             "cost": 0
         }
     }
+
+
+@app.post("/webhooks/safepay")
+async def safepay_webhook(request: Request, db: Session = Depends(get_db)):
+    """Receives and securely processes payment webhooks."""
+
+    # 1. Get the raw bytes (needed for crypto) and the signature header
+    payload = await request.body()
+    signature = request.headers.get("X-Sfp-Signature", "")
+
+    # 2. Verify Cryptography (Rejects forgeries with ValueError)
+    try:
+        event = payment_provider.verify_webhook(payload, signature, settings.WEBHOOK_SECRET)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # 3. Extract Webhook Data
+    event_id = event.get("event_id")
+    event_type = event.get("type")
+    # Safepay normally passes your internal ID in a metadata object
+    tenant_id = event.get("metadata", {}).get("tenant_id")
+
+    if not event_id or not tenant_id:
+        raise HTTPException(status_code=400, detail="Malformed webhook payload")
+
+    # 4. Process the specific event type
+    if event_type == "subscription.upgraded":
+        processed = WebhookService.process_upgrade_event(db, event_id, int(tenant_id))
+        if not processed:
+            # We return 200 OK so Safepay stops retrying, but we don't do the work again!
+            return {"status": "ignored", "message": "Duplicate event"}
+
+    return {"status": "success", "message": "Webhook processed"}
