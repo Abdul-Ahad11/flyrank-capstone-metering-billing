@@ -1,71 +1,149 @@
-# FlyRank Capstone: Usage Metering and Billing Engine
+<div align="center">
 
-A robust, multi-tenant usage metering and billing backend built with **FastAPI, PostgreSQL, and Docker**. The engine is designed to handle API calls and AI token usage while enforcing tenant isolation, exactly-once idempotent metering, quota limits, accurate money calculations, and secure payment webhooks.
+# 📊 FlyRank Capstone
+## Usage Metering & Billing Engine
 
----
+**A production-grade, multi-tenant usage metering and billing backend for API calls and AI token consumption.**
 
-## Architectural Decisions and Core Features
+![Python](https://img.shields.io/badge/Python-3776AB?style=for-the-badge&logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=for-the-badge&logo=fastapi&logoColor=white)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-4169E1?style=for-the-badge&logo=postgresql&logoColor=white)
+![Docker](https://img.shields.io/badge/Docker-2496ED?style=for-the-badge&logo=docker&logoColor=white)
+![Pytest](https://img.shields.io/badge/Pytest-0A9EDC?style=for-the-badge&logo=pytest&logoColor=white)
 
-This project was designed to satisfy strict enterprise billing requirements and Capstone acceptance probes.
-
-### 1. Idempotent Metering — Exactly-Once Guarantee
-
-* **Mechanism:** A PostgreSQL `UniqueConstraint` on `(tenant_id, idempotency_key)` in the `UsageEvent` table prevents duplicate usage records.
-* **Resilience:** `MeterService` handles `IntegrityError` exceptions, rolls back safely, and returns the existing usage event when the same idempotency key is submitted again.
-* **Result:** Network retries or duplicate requests cannot cause the same usage to be billed twice.
-
-### 2. Multi-Tenant Isolation
-
-* **Mechanism:** Tenant identification is enforced at the HTTP boundary using the FastAPI `get_current_tenant` dependency.
-* **Security:** Every tenant-specific request requires an `X-Tenant-ID` header.
-* Missing or invalid tenant information is rejected before the request reaches the core business logic.
-* Usage, quotas, and billing calculations are always associated with the authenticated tenant.
-
-### 3. Quota Engine and HTTP Status Codes
-
-The `QuotaService` strictly enforces plan limits.
-
-* **Free-tier limit reached:** Returns `402 Payment Required`, indicating that an upgrade is required.
-* **Paid-tier hard limit reached:** Returns `429 Too Many Requests`.
-* Quota checks are performed **before billable work is recorded**.
-
-### 4. Money Math and AI Token Pricing
-
-All billing calculations are designed to avoid floating-point precision errors.
-
-* **No floating-point money calculations:** Prices are represented as integer micro-units.
-* **Regular input tokens:** Use the standard input-token price.
-* **Cached input tokens:** Are billed at a lower rate than regular input tokens.
-* **Output tokens:** Use the configured output-token price.
-* **Reasoning tokens:** Are billed at exactly the same rate as output tokens.
-* Pricing rules are centralized in the pricing configuration and verified through automated tests.
-
-### 5. Payment Webhook Security and Deduplication
-
-The payment layer uses a provider abstraction so the core billing logic is not tightly coupled to one payment provider.
-
-* **Provider:** Safepay Sandbox is used for the current implementation because Stripe does not officially support account creation in Pakistan under the project's compliance constraints.
-* **Abstraction:** A generic `PaymentProvider` interface allows provider-specific implementations such as `SafepayProvider` without changing the core billing logic.
-* **Cryptographic verification:** Webhook signatures are verified using HMAC SHA-256 and `hmac.compare_digest`.
-* **Replay protection:** The `ProcessedWebhook` table prevents the same webhook event from being processed more than once.
-* **Retry safety:** Provider retries are handled idempotently.
+</div>
 
 ---
 
-## Tech Stack
+## Overview
 
-* **Framework:** FastAPI
-* **Language:** Python
-* **Database:** PostgreSQL
-* **Database Runtime:** Docker / Docker Compose
-* **ORM:** SQLAlchemy 2.0
-* **Migrations:** Alembic
-* **Testing:** Pytest and HTTPX
-* **Configuration:** Pydantic Settings
+FlyRank's Capstone billing engine enforces **tenant isolation**, **exactly-once idempotent metering**, **quota limits**, **integer-precise money math**, and **cryptographically verified payment webhooks**. It's built to survive the messy realities of production billing — network retries, duplicate webhooks, and tenants trying to sneak past their quota — without ever double-charging a customer.
+
+### ✅ Capstone Requirements at a Glance
+
+| Requirement | Status | How it's satisfied |
+|---|:---:|---|
+| Exactly-once metering | ✅ | DB-level `UniqueConstraint` on `(tenant_id, idempotency_key)` |
+| Multi-tenant isolation | ✅ | Enforced `X-Tenant-ID` header at the FastAPI dependency layer |
+| Quota enforcement | ✅ | `402 Payment Required` (free tier) / `429 Too Many Requests` (paid tier) |
+| Precise money math | ✅ | Integer micro-units — zero floating-point drift |
+| Secure webhooks | ✅ | HMAC-SHA256 + `hmac.compare_digest` + replay protection |
 
 ---
 
-## Project Structure
+## 📚 Table of Contents
+
+- [Core Capabilities](#-core-capabilities)
+- [Architecture](#️-architecture)
+- [Tech Stack](#-tech-stack)
+- [Project Structure](#-project-structure)
+- [Getting Started](#-getting-started)
+- [API Reference](#-api-reference)
+- [Idempotency Design](#-idempotency-design)
+- [Automated Test Suite](#-automated-test-suite)
+- [Key Design Principles](#-key-design-principles)
+
+---
+
+## ✨ Core Capabilities
+
+### 🔁 Idempotent Metering — Exactly-Once Guarantee
+
+A PostgreSQL `UniqueConstraint` on `(tenant_id, idempotency_key)` in the `UsageEvent` table makes duplicate usage records impossible at the database level. `MeterService` catches the resulting `IntegrityError`, rolls back safely, and returns the *original* usage event instead of failing — so network retries or duplicate requests can never bill the same usage twice.
+
+### 🏢 Multi-Tenant Isolation
+
+Every tenant-specific request must carry an `X-Tenant-ID` header, validated by the `get_current_tenant` FastAPI dependency before the request ever reaches business logic. Missing or invalid tenant IDs are rejected up front, and every usage, quota, and billing calculation is scoped strictly to the authenticated tenant.
+
+### 📊 Quota Engine & HTTP Status Codes
+
+`QuotaService` enforces plan limits **before** any billable work is recorded:
+
+| Scenario | Response |
+|---|---|
+| Free-tier limit reached | `402 Payment Required` — upgrade needed |
+| Paid-tier hard limit reached | `429 Too Many Requests` — throttled |
+
+### 💰 Money Math & AI Token Pricing
+
+All billing math runs on **integer micro-units** — no floating-point money, ever.
+
+| Token type | Pricing rule |
+|---|---|
+| Regular input tokens | Standard input-token rate |
+| Cached input tokens | Discounted rate (cheaper than regular input) |
+| Output tokens | Configured output-token rate |
+| Reasoning tokens | Billed identically to output tokens |
+
+Pricing rules live in a centralized config and are locked in by automated tests.
+
+### 🔐 Payment Webhook Security
+
+A generic `PaymentProvider` interface decouples core billing logic from any single payment vendor. The current implementation uses **Safepay Sandbox**, since Stripe does not officially support account creation in Pakistan under this project's compliance constraints.
+
+- **Signature verification:** HMAC-SHA256 via `hmac.compare_digest` (constant-time comparison)
+- **Replay protection:** `ProcessedWebhook` table blocks reprocessing of the same event
+- **Retry safety:** Provider retries are absorbed idempotently
+
+---
+
+## 🏗️ Architecture
+
+### Request & Billing Flow
+
+```mermaid
+flowchart TD
+    A[Client] -->|"X-Tenant-ID + Idempotency-Key"| B[FastAPI Router]
+    B --> C[Tenant Identification]
+    C --> D{QuotaService<br/>Is tenant allowed?}
+    D -->|Within limits| E[MeterService<br/>Record usage]
+    D -->|Free tier exceeded| F["402 Payment Required"]
+    D -->|Paid tier exceeded| G["429 Too Many Requests"]
+    E --> H[("UsageEvent table")]
+    H --> I[CostService<br/>Calculate cost]
+    I --> J[Billing / Usage Dashboard]
+
+    style F fill:#ffe0e0,stroke:#d33,color:#900
+    style G fill:#fff3cd,stroke:#d9a400,color:#7a5b00
+    style J fill:#e0f7e9,stroke:#2e9e5b,color:#155724
+```
+
+### Payment Webhook Flow
+
+```mermaid
+flowchart TD
+    A[Payment Provider] -->|Webhook event| B["POST /webhooks/safepay"]
+    B --> C{Verify HMAC-SHA256 signature}
+    C -->|Invalid| D[Reject request]
+    C -->|Valid| E{Already processed?}
+    E -->|Yes| F[Ignore duplicate]
+    E -->|No| G[Process event]
+    G --> H[("ProcessedWebhook table")]
+    G --> I[Update tenant billing state]
+
+    style D fill:#ffe0e0,stroke:#d33,color:#900
+    style F fill:#fff3cd,stroke:#d9a400,color:#7a5b00
+    style I fill:#e0f7e9,stroke:#2e9e5b,color:#155724
+```
+
+---
+
+## 🧰 Tech Stack
+
+| Layer | Technology |
+|---|---|
+| Framework | FastAPI |
+| Language | Python |
+| Database | PostgreSQL |
+| Database Runtime | Docker / Docker Compose |
+| ORM | SQLAlchemy 2.0 |
+| Migrations | Alembic |
+| Testing | Pytest + HTTPX |
+| Configuration | Pydantic Settings |
+
+---
+
+## 📁 Project Structure
 
 ```text
 .
@@ -99,13 +177,11 @@ The payment layer uses a provider abstraction so the core billing logic is not t
 
 ---
 
-## Local Setup and Installation
+## 🚀 Getting Started
 
-### 1. Clone the Repository
+### 1. Clone the repository
 
-Clone the repository and move into the project directory.
-
-Create a `.env` file in the project root:
+Clone the repository and move into the project directory, then create a `.env` file in the project root:
 
 ```env
 POSTGRES_USER=postgres
@@ -114,9 +190,7 @@ POSTGRES_DB=billing_db
 WEBHOOK_SECRET=whsec_test_secret_for_local_dev
 ```
 
-> **Security:** Never commit the real `.env` file or production webhook secrets to Git.
-
----
+> ⚠️ **Security:** Never commit the real `.env` file or production webhook secrets to Git.
 
 ### 2. Start PostgreSQL with Docker
 
@@ -126,84 +200,60 @@ docker compose up -d
 
 This starts the PostgreSQL database in the background.
 
----
-
-### 3. Create and Activate a Virtual Environment
+### 3. Create and activate a virtual environment
 
 ```bash
 python -m venv .venv
-source .venv/bin/activate
+source .venv/bin/activate      # Windows: .venv\Scripts\activate
 ```
 
-On Windows:
-
-```bash
-.venv\Scripts\activate
-```
-
-Install the project dependencies:
+Install dependencies:
 
 ```bash
 pip install -r requirements.txt
 ```
 
----
-
-### 4. Run Database Migrations
-
-Apply the SQLAlchemy models and database schema using Alembic:
+### 4. Run database migrations
 
 ```bash
 alembic upgrade head
 ```
 
----
-
-### 5. Seed Demo Data
-
-Populate the database with:
-
-* Free Plan
-* Pro Plan
-* Demo Tenant
-
-Run:
+### 5. Seed demo data
 
 ```bash
 python scripts/seed.py
 ```
 
-The demo tenant is created with ID `1`.
+This populates a **Free Plan**, **Pro Plan**, and a **Demo Tenant** (ID `1`).
 
----
-
-### 6. Start the API Server
+### 6. Start the API server
 
 ```bash
 uvicorn app.main:app --reload
 ```
 
-The API will be available at:
-
-```text
-http://127.0.0.1:8000
-```
-
-FastAPI's interactive documentation is available at:
-
-```text
-http://127.0.0.1:8000/docs
-```
+| Resource | URL |
+|---|---|
+| API root | `http://127.0.0.1:8000` |
+| Interactive docs (Swagger) | `http://127.0.0.1:8000/docs` |
 
 ---
 
-# API Endpoints
+## 🔌 API Reference
 
-## 1. `GET /health`
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/health` | Health check for the billing engine |
+| `GET` | `/me` | Returns info about the current tenant |
+| `POST` | `/generate` | Simulated billable AI request |
+| `GET` | `/usage` | Tenant usage dashboard |
+| `POST` | `/webhooks/safepay` | Payment-provider webhook receiver |
 
-Checks whether the billing engine is running.
+<details>
+<summary><strong>GET /health</strong></summary>
 
-### Response
+**Response**
 
 ```json
 {
@@ -212,19 +262,18 @@ Checks whether the billing engine is running.
 }
 ```
 
----
+</details>
 
-## 2. `GET /me`
+<details>
+<summary><strong>GET /me</strong></summary>
 
-Returns information about the current tenant.
-
-### Required Header
+**Required header**
 
 ```text
 X-Tenant-ID: 1
 ```
 
-### Example Response
+**Response**
 
 ```json
 {
@@ -234,29 +283,21 @@ X-Tenant-ID: 1
 }
 ```
 
----
+</details>
 
-## 3. `POST /generate`
+<details>
+<summary><strong>POST /generate</strong></summary>
 
-A dummy billable endpoint that simulates an AI model request.
+A dummy billable endpoint simulating an AI model request. It identifies the tenant, calculates total AI token usage, checks API-call and token quotas, records usage idempotently, calculates cost, and returns the recorded usage.
 
-The endpoint:
-
-1. Identifies the tenant.
-2. Calculates total AI token usage.
-3. Checks API-call and token quotas.
-4. Records usage idempotently.
-5. Calculates usage cost.
-6. Returns the recorded usage information.
-
-### Required Headers
+**Required headers**
 
 ```text
 X-Tenant-ID: 1
 Idempotency-Key: unique-request-key
 ```
 
-### Example Request
+**Request body**
 
 ```json
 {
@@ -267,7 +308,7 @@ Idempotency-Key: unique-request-key
 }
 ```
 
-### Example Response
+**Response**
 
 ```json
 {
@@ -280,44 +321,27 @@ Idempotency-Key: unique-request-key
 }
 ```
 
----
+</details>
 
-## 4. `GET /usage`
+<details>
+<summary><strong>GET /usage</strong></summary>
 
-Provides the tenant's usage dashboard.
-
-It returns:
-
-* Monthly API usage
-* AI token usage
-* Plan limits
-* Remaining quota
-* Calculated costs
-
-### Required Header
+**Required header**
 
 ```text
 X-Tenant-ID: 1
 ```
 
----
+Returns monthly API usage, AI token usage, plan limits, remaining quota, and calculated costs.
 
-## 5. `POST /webhooks/safepay`
+</details>
 
-Receives payment-provider webhook events.
+<details>
+<summary><strong>POST /webhooks/safepay</strong></summary>
 
-The endpoint:
+Receives payment-provider webhook events: verifies the signature, rejects forged requests, checks for duplicate processing, applies valid payment/subscription events, updates tenant billing state, and records the webhook as processed.
 
-1. Receives the raw webhook payload.
-2. Reads the provider signature.
-3. Verifies the signature using the configured webhook secret.
-4. Rejects forged or invalid requests.
-5. Checks whether the webhook event was already processed.
-6. Processes valid payment/subscription events.
-7. Updates the tenant's billing state.
-8. Records the webhook as processed.
-
-### Required Header
+**Required header**
 
 ```text
 X-Sfp-Signature: <signature>
@@ -325,165 +349,49 @@ X-Sfp-Signature: <signature>
 
 Duplicate webhook events are safely ignored to prevent duplicate subscription updates.
 
+</details>
+
 ---
 
-# Billing Flow
+## 🔑 Idempotency Design
 
-The overall billing architecture follows this flow:
+A single AI request can produce multiple usage events. Rather than one lump `idempotency_key`, the original key is fanned out into per-category event keys — so each usage type is stored independently while still guaranteeing exactly-once behavior *per billable event*.
 
-```text
-Client
-  │
-  │ X-Tenant-ID
-  │ Idempotency-Key
-  ▼
-FastAPI
-  │
-  ▼
-Tenant Identification
-  │
-  ▼
-QuotaService
-  │
-  │ "Is this tenant allowed?"
-  ▼
-MeterService
-  │
-  │ "What did the tenant use?"
-  ▼
-UsageEvent
-  │
-  ▼
-CostService
-  │
-  │ "How much does it cost?"
-  ▼
-Billing / Usage Dashboard
-```
-
-Payment processing is handled separately:
-
-```text
-Payment Provider
-      │
-      │ Webhook
-      ▼
-/webhooks/safepay
-      │
-      ▼
-PaymentProvider
-      │
-      ▼
-Signature Verification
-      │
-      ▼
-ProcessedWebhook
-      │
-      ▼
-Update Tenant Billing State
+```mermaid
+flowchart LR
+    A["request-123<br/>(original key)"] --> B[request-123-api]
+    A --> C[request-123-in]
+    A --> D[request-123-cache]
+    A --> E[request-123-out]
+    A --> F[request-123-reason]
 ```
 
 ---
 
-# Idempotency Design
-
-A single AI request can produce multiple usage events.
-
-For example:
-
-```text
-Original Idempotency Key:
-request-123
-```
-
-The system generates unique event keys:
-
-```text
-request-123-api
-request-123-in
-request-123-cache
-request-123-out
-request-123-reason
-```
-
-This allows each usage type to be stored independently while maintaining exactly-once behavior for each billable event.
-
----
-
-# Automated Test Suite
-
-The project includes an automated test suite designed around the Capstone acceptance requirements.
-
-Run all tests with:
+## 🧪 Automated Test Suite
 
 ```bash
 pytest -v
 ```
 
-### Test Coverage
-
-#### `test_tenant.py`
-
-Verifies:
-
-* Tenant isolation
-* Required `X-Tenant-ID` header
-* Invalid tenant rejection
-* Requests cannot access another tenant's data
-
-#### `test_metering.py`
-
-Verifies:
-
-* Usage events are recorded correctly
-* Database uniqueness constraints prevent duplicate events
-* Repeated idempotency keys do not create duplicate charges
-* Original usage events are safely returned after duplicate requests
-
-#### `test_quotas.py`
-
-Verifies:
-
-* Usage can reach the exact plan limit
-* Requests beyond the limit are rejected
-* Free-tier users receive `402 Payment Required`
-* Paid-tier users receive `429 Too Many Requests`
-
-#### `test_cost.py`
-
-Verifies:
-
-* Exact AI token pricing
-* Cached input tokens are cheaper than regular input tokens
-* Reasoning tokens use the same price as output tokens
-* Cost calculations return integer micro-units
-* Different token categories are priced independently
-
-#### `test_webhooks.py`
-
-Verifies:
-
-* Valid webhook signatures are accepted
-* Forged signatures are rejected
-* Valid payment events update the database correctly
-* Duplicate webhook events are ignored
-* Replayed events cannot cause duplicate processing
+| Test file | Verifies |
+|---|---|
+| `test_tenant.py` | Tenant isolation, required `X-Tenant-ID` header, invalid-tenant rejection, cross-tenant data protection |
+| `test_metering.py` | Correct usage recording, DB uniqueness constraints, no duplicate charges on repeated keys, safe return of original events |
+| `test_quotas.py` | Usage reaching exact plan limits, rejection beyond limits, `402` for free tier, `429` for paid tier |
+| `test_cost.py` | Exact AI token pricing, cached-token discount, reasoning-token parity with output tokens, integer micro-unit output |
+| `test_webhooks.py` | Valid signature acceptance, forged-signature rejection, correct DB updates, duplicate/replay protection |
 
 ---
 
-# Key Design Principles
+## 🧭 Key Design Principles
 
-This project follows several important backend and billing principles:
+| Principle | Principle |
+|---|---|
+| 🔒 Tenant isolation at the API boundary | 🧮 Integer-based money calculations |
+| 🗄️ Database-enforced uniqueness | ⚙️ Centralized pricing configuration |
+| 🔁 Idempotent billing operations | 🔌 Provider abstraction |
+| 🚦 Quota validation before billable work | 🔐 Cryptographic webhook verification |
+| 🛡️ Webhook replay protection | ✅ Automated acceptance testing |
 
-* **Tenant isolation at the API boundary**
-* **Database-enforced uniqueness**
-* **Idempotent billing operations**
-* **Quota validation before billable work**
-* **Integer-based money calculations**
-* **Centralized pricing configuration**
-* **Provider abstraction**
-* **Cryptographic webhook verification**
-* **Webhook replay protection**
-* **Automated acceptance testing**
-
-The result is a billing engine that separates **authorization, usage metering, cost calculation, and payment processing** into clear responsibilities while keeping the core architecture extensible for additional payment providers.
+The result is a billing engine that separates **authorization, usage metering, cost calculation, and payment processing** into clear responsibilities — while staying extensible for additional payment providers.
