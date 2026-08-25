@@ -5,8 +5,8 @@ class Settings(BaseSettings):
     POSTGRES_USER: str
     POSTGRES_PASSWORD: str
     POSTGRES_DB: str
+    WEBHOOK_SECRET: str = "whsec_test_secret_for_local_dev"  # Default for local testing
 
-    # Pydantic will automatically load variables from the .env file
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     @property
