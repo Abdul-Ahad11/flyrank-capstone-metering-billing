@@ -1,11 +1,12 @@
 import hmac
 import hashlib
 import json
+import uuid
 from fastapi.testclient import TestClient
 from app.main import app
 from app.config import settings
 from app.database import SessionLocal
-from app.models import Tenant
+from app.models import Tenant, Plan
 
 client = TestClient(app)
 
@@ -30,13 +31,22 @@ def test_webhook_security_and_idempotency():
     db = SessionLocal()
     tenant_id = 1  # Our demo tenant
 
-    # Verify tenant is currently on Free plan
+    # FIX: Force reset the tenant to the Free plan before testing
     tenant = db.query(Tenant).filter(Tenant.id == tenant_id).first()
+    free_plan = db.query(Plan).filter(Plan.name == "Free").first()
+    tenant.plan_id = free_plan.id
+    db.commit()
+    db.refresh(tenant)
+
+    # Verify tenant is currently on Free plan
     assert tenant.plan.name == "Free", "Tenant should start on Free plan"
     db.close()
 
+    # Generate a unique event ID for every test run to bypass deduplication
+    unique_event_id = f"evt_test_{uuid.uuid4()}"
+
     valid_event_payload = {
-        "event_id": "evt_test_12345",
+        "event_id": unique_event_id,
         "type": "subscription.upgraded",
         "metadata": {"tenant_id": tenant_id}
     }
